@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- The release asset is now `jev-for-chrome-extension-<version>.zip`, made by `npm run package`. Up to 1.5.3 it was `jev-for-chrome-<version>.zip`, the name GitHub gives its own source archive, so both unzipped to the same folder and loading the source one failed with "Manifest file is missing or unreadable" ([#1](https://github.com/chy4pro/jev-for-chrome/issues/1)). The 1.5.3 asset has been renamed in place; its contents are unchanged.
+- `npm run package` refuses to build the zip when `dist/manifest.json` and `package.json` disagree on the version, or when the manifest points at a file that is not in `dist/`. `package.json` had stayed at 1.4.5 since that release; it is 1.5.3 now.
+
 ## 1.5.3 — 2026-09-22
 - A model request whose `fetch` throws (DNS failure, connection reset, "Failed to fetch" in the service worker) is retried with the same backoff as a transient HTTP status, instead of failing the run on the first attempt. A live suite lost five tasks in a ten-second network window to this; model requests are idempotent, so resending is safe.
 - The E2E suite takes its provider, model, endpoint and text helper from the environment, so it can run against any gateway; OpenRouter stays the default. The options-page check no longer depends on the OpenRouter tab being active, and `tsx` is declared as a dev dependency.

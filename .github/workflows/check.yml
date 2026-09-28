@@ -18,7 +18,14 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # the release asset: fails if manifest.json and package.json disagree on the version,
+      # or the manifest points at a file the build did not produce
+      - run: node scripts/package.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: extension-dist
           path: dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-release-zip
+          path: release/*.zip

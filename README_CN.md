@@ -84,7 +84,9 @@ Jev 返回的是候选项上的概率分布，弹窗里每一步都能看到模�
 
 暂未上架 Chrome 应用商店。
 
-**用发布包**：到 [Releases 页面](https://github.com/chy4pro/jev-for-chrome/releases)下载 `jev-for-chrome-<版本>.zip`，解压，打开 `chrome://extensions`，开启开发者模式，点 **加载已解压的扩展程序**，选择解压出来的目录。
+**用发布包**：到 [Releases 页面](https://github.com/chy4pro/jev-for-chrome/releases)，在 **Assets** 下载 `jev-for-chrome-extension-<版本>.zip`（不是 **Source code**）。解压，打开 `chrome://extensions`，开启开发者模式，点 **加载已解压的扩展程序**，选择解压出来的目录——也就是直接包含 `manifest.json` 的那一层。
+
+Chrome 报 *Manifest file is missing or unreadable*（清单文件缺失或不可读），说明选的目录第一层没有 `manifest.json`。多半是下成了 **Source code**：那是仓库源码，清单在 `public/` 里，要先构建（见下）。1.5.3 及之前的发布包叫 `jev-for-chrome-<版本>.zip`，跟 GitHub 自动生成的源码包同名，两个解压出来的目录名也一样。
 
 **从源码**：
 

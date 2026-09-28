@@ -84,7 +84,9 @@ Sites behind Cloudflare's "verify you are human" page (Cambridge Dictionary, All
 
 There is no Chrome Web Store listing yet.
 
-**From a release**: download `jev-for-chrome-<version>.zip` from the [Releases page](https://github.com/chy4pro/jev-for-chrome/releases), unzip it, open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the unzipped folder.
+**From a release**: on the [Releases page](https://github.com/chy4pro/jev-for-chrome/releases), under **Assets**, download `jev-for-chrome-extension-<version>.zip` (not **Source code**). Unzip it, open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the unzipped folder: the one that directly contains `manifest.json`.
+
+If Chrome says *Manifest file is missing or unreadable*, the folder you picked has no `manifest.json` at its top level. Usually that is the **Source code** download, which is the repository: its manifest is in `public/` and it has to be built first (see below). Releases up to 1.5.3 named the asset `jev-for-chrome-<version>.zip`, the same name GitHub gives the source archive, so the two unzipped to the same folder name.
 
 **From source**:
 

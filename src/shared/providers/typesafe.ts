@@ -3,7 +3,8 @@ import { postJson } from './http';
 
 export async function callTypeSafe(
   config: TypeSafeConfig,
-  request: JevRequest
+  request: JevRequest,
+  options: { signal?: AbortSignal } = {}
 ): Promise<JevResponse> {
   const apiKey = (config.apiKey || '').trim();
   if (!apiKey) {
@@ -17,7 +18,7 @@ export async function callTypeSafe(
     endpoint,
     { Authorization: `Bearer ${apiKey}` },
     { model, state: request.state, questions: request.questions },
-    { label: 'TypeSafe API' }
+    { label: 'TypeSafe API', signal: options.signal }
   );
   return json as JevResponse;
 }

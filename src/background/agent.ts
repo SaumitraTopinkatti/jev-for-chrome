@@ -95,6 +95,15 @@ export class AgentRunner {
   private history: RecentAction[] = [];
   private activeTabId: number | null = null;
   private runToken = 0;
+  /** Cancels in-flight provider/text-helper requests when the run stops. */
+  private providerAbort: AbortController | null = null;
+
+  /** Starts a fresh abort scope, cancelling any request from the previous scope. */
+  private newProviderScope(): AbortSignal {
+    this.providerAbort?.abort();
+    this.providerAbort = new AbortController();
+    return this.providerAbort.signal;
+  }
 
   private lastFingerprint: string | null = null;
   private lastSummary: PageSummary | null = null;
@@ -176,6 +185,7 @@ export class AgentRunner {
 
   private reset(goal: string, tabId: number): void {
     this.runToken++;
+    this.newProviderScope();
     this.activeTabId = tabId;
     this.history = [];
     this.lastFingerprint = null;
@@ -206,9 +216,11 @@ export class AgentRunner {
   public async start(goal: string, tabId: number): Promise<void> {
     if (this.progress.status === 'running') return;
     this.reset(goal, tabId);
+    const token = this.runToken;
     this.broadcastUpdate();
     await this.attachInput(tabId);
-    await this.loop(this.runToken);
+    if (token !== this.runToken) return;
+    await this.loop(token);
   }
 
   /** Executes exactly one step. A new goal, or a finished run, starts over; a paused run continues. */
@@ -219,6 +231,7 @@ export class AgentRunner {
       this.reset(goal, tabId);
     } else {
       this.runToken++;
+      this.newProviderScope();
       this.progress.status = 'running';
     }
     const token = this.runToken;
@@ -230,7 +243,16 @@ export class AgentRunner {
 
     this.broadcastUpdate();
     await this.attachInput(tabId);
-    const cont = await this.executeOneStep(token);
+    if (token !== this.runToken) return;
+    let cont: boolean;
+    try {
+      cont = await this.executeOneStep(token);
+    } catch (err: any) {
+      // H4: an unexpected throw (malformed snapshot, logging) must end the run, not wedge at "running".
+      if (token !== this.runToken) return;
+      this.finish('error', `Step failed: ${err?.message || String(err)}`);
+      return;
+    }
     if (token === this.runToken && this.progress.status === 'running') {
       this.progress.status = cont ? 'paused' : 'idle';
     }
@@ -240,6 +262,7 @@ export class AgentRunner {
 
   public stop(): void {
     this.runToken++;
+    this.providerAbort?.abort();
     void this.input.detach();
     if (this.progress.status === 'running' || this.progress.status === 'paused') {
       this.progress.status = 'idle';
@@ -254,7 +277,15 @@ export class AgentRunner {
         this.finish('blocked', `Reached the ${this.progress.maxSteps}-step budget without DONE.`);
         break;
       }
-      const cont = await this.executeOneStep(token);
+      let cont: boolean;
+      try {
+        cont = await this.executeOneStep(token);
+      } catch (err: any) {
+        // H4: anything thrown outside the per-stage handlers must end the run, not wedge at "running".
+        if (token !== this.runToken) break;
+        this.finish('error', `Step failed: ${err?.message || String(err)}`);
+        break;
+      }
       if (!cont) break;
       if (this.settings.stepDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, this.settings.stepDelayMs));
@@ -301,8 +332,9 @@ export class AgentRunner {
   }
 
   /** Makes sure a single content script instance is listening in the tab. */
-  private async ensureContentScriptReady(tabId: number): Promise<void> {
+  private async ensureContentScriptReady(tabId: number, token?: number): Promise<void> {
     const tab = await chrome.tabs.get(tabId);
+    if (token !== undefined && token !== this.runToken) throw new DOMException('Stopped', 'AbortError');
     const url = tab.url || '';
     if (INTERNAL_PREFIXES.some((p) => url.startsWith(p))) {
       throw new Error(
@@ -313,6 +345,7 @@ export class AgentRunner {
     // guards against double registration, so a later manifest injection is harmless.
     let injectError = '';
     for (let attempt = 0; attempt < 6; attempt++) {
+      if (token !== undefined && token !== this.runToken) throw new DOMException('Stopped', 'AbortError');
       if (await this.ping(tabId)) return;
       try {
         await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
@@ -336,24 +369,56 @@ export class AgentRunner {
    */
   private async executeOneStep(token: number): Promise<boolean> {
     await this.followTab();
+    if (token !== this.runToken) return false;
     const tabId = this.activeTabId;
     if (tabId === null) {
       this.finish('error', 'No active tab identified');
       return false;
     }
 
-    // 1. Observe
+    // 1. Observe (M1: one retry for navigation races; the click that caused the
+    //    navigation must not kill the run it just triggered)
     let snapshot: PageSnapshot;
     try {
-      await this.ensureContentScriptReady(tabId);
-      const response = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_OBSERVE' });
+      await this.ensureContentScriptReady(tabId, token);
+      const observeOnce = () => chrome.tabs.sendMessage(tabId, { type: 'CONTENT_OBSERVE' });
+      let response = await observeOnce();
+      if ((!response?.success || !response.snapshot) && isNavigationError(response?.error || '')) {
+        await this.waitForTabToLoad(tabId);
+        if (token !== this.runToken) return false;
+        response = await observeOnce();
+      }
       if (!response?.success || !response.snapshot) {
         throw new Error(response?.error || 'Failed to capture page DOM snapshot');
       }
       snapshot = response.snapshot;
     } catch (err: any) {
-      this.finish('error', `Observe failed: ${err?.message || String(err)}`);
-      return false;
+      // H2: Stop during observe/injection is silent, not an error finish.
+      if (token !== this.runToken || err?.name === 'AbortError') return false;
+      const message = err?.message || String(err);
+      if (isNavigationError(message)) {
+        try {
+          await this.waitForTabToLoad(tabId);
+        } catch {
+          // ignore wait failures; the retry decides
+        }
+        if (token !== this.runToken) return false;
+        try {
+          const retry = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_OBSERVE' });
+          if (retry?.success && retry.snapshot) {
+            snapshot = retry.snapshot;
+          } else {
+            throw new Error(retry?.error || 'Failed to capture page DOM snapshot');
+          }
+        } catch (retryErr: any) {
+          if (token !== this.runToken || retryErr?.name === 'AbortError') return false;
+          this.finish('error', `Observe failed: ${retryErr?.message || String(retryErr)}`);
+          return false;
+        }
+      } else {
+        this.finish('error', `Observe failed: ${message}`);
+        return false;
+      }
     }
     if (token !== this.runToken) return false;
 
@@ -443,8 +508,10 @@ export class AgentRunner {
     let jevResponse;
     try {
       this.decisionCount++;
-      jevResponse = await callJevProvider(this.settings, request);
+      jevResponse = await callJevProvider(this.settings, request, { signal: this.providerAbort?.signal });
     } catch (err: any) {
+      // H2: a Stop-aborted decision is silent; it must not overwrite the idle status with an error.
+      if (token !== this.runToken || err?.name === 'AbortError') return false;
       this.finish('error', `Jev decision failed: ${err?.message || String(err)}`);
       return false;
     }
@@ -539,8 +606,9 @@ export class AgentRunner {
         generatedText = this.pendingText.text;
       } else {
         try {
-          generatedText = await generateFieldText(this.settings, context);
+          generatedText = await generateFieldText(this.settings, context, { signal: this.providerAbort?.signal });
         } catch (err: any) {
+          if (token !== this.runToken || err?.name === 'AbortError') return false;
           const message = err?.message || String(err);
           if (!/nothing typed/i.test(message)) {
             this.finish('error', `Text helper failed: ${message}`);
@@ -567,7 +635,9 @@ export class AgentRunner {
     this.sendStatus({ text: `${operation} ${targetAction.label}`.slice(0, 120), latencyMs });
     let navigated = false;
     try {
-      const result = await this.act(tabId, targetAction, generatedText);
+      const result = await this.act(tabId, targetAction, generatedText, token);
+      // H2: Stop during act wins; nothing after this point may execute or be recorded.
+      if (token !== this.runToken) return false;
       if (!result.ok) {
         if (result.code === 'invalid') {
           this.finish('error', `Act execution failed: ${result.message}`);
@@ -589,6 +659,8 @@ export class AgentRunner {
         return true; // observe again; nothing was executed
       }
     } catch (err: any) {
+      // H2: Stop during act wins, even when the page navigated mid-action.
+      if (token !== this.runToken || err?.name === 'AbortError') return false;
       const message = err?.message || String(err);
       if (!isNavigationError(message)) {
         this.finish('error', `Act execution failed: ${message}`);
@@ -674,6 +746,10 @@ export class AgentRunner {
         ? 'Could not attach the debugger (DevTools open on this tab?); using synthetic events.'
         : 'The debugger API is unavailable in this browser; using synthetic events.';
     }
+    // Stop during attach wins: never leave the debugger attached while idle.
+    if (this.progress.status !== 'running') {
+      await this.input.detach();
+    }
     this.broadcastUpdate();
   }
 
@@ -682,12 +758,14 @@ export class AgentRunner {
    * through the DevTools protocol when attached, or with synthetic events otherwise. A
    * trusted dispatch that throws falls back to synthetic on the already prepared target.
    */
-  private async act(tabId: number, action: PageAction, text?: string): Promise<ActResult> {
+  private async act(tabId: number, action: PageAction, text?: string, token?: number): Promise<ActResult> {
+    const stopped = () => token !== undefined && token !== this.runToken;
     if (this.input.attachedTab !== tabId) {
       const result: ActResult | undefined = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_ACT', action, text });
       return result ?? { ok: false, code: 'failed', message: 'No reply from the page.' };
     }
     const prep: PrepareResult | undefined = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_PREPARE', action, text });
+    if (stopped()) throw new DOMException('Stopped', 'AbortError');
     if (!prep) return { ok: false, code: 'failed', message: 'No reply from the page.' };
     if (!prep.ok) return prep;
     if (prep.done) return { ok: true, via: 'page' };
@@ -703,11 +781,15 @@ export class AgentRunner {
         return { ok: false, code: 'invalid', message: `Unknown action kind: ${String(action.kind)}` };
       }
     } catch (err: any) {
+      // H2: Stop wins over the synthetic fallback; never dispatch after the user stopped.
+      if (stopped()) throw new DOMException('Stopped', 'AbortError');
       // The session was lost mid-action (tab navigated away, user cancelled): synthetic events
       // on the target the page already prepared are the closest equivalent.
       const fallback: ActResult | undefined = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_DISPATCH', action, text });
+      if (stopped()) throw new DOMException('Stopped', 'AbortError');
       return fallback ?? { ok: false, code: 'failed', message: err?.message || String(err) };
     }
+    if (stopped()) throw new DOMException('Stopped', 'AbortError');
     await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_SETTLE' }).catch(() => undefined);
     return { ok: true, via: 'cdp' };
   }

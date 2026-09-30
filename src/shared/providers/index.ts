@@ -19,15 +19,16 @@ export function activeJevModel(settings: AppSettings): string {
 
 export async function callJevProvider(
   settings: AppSettings,
-  request: JevRequest
+  request: JevRequest,
+  options: { signal?: AbortSignal } = {}
 ): Promise<JevResponse> {
   switch (settings.activeProvider) {
     case 'typesafe':
-      return callTypeSafe(settings.typesafe, request);
+      return callTypeSafe(settings.typesafe, request, options);
     case 'openrouter':
-      return callOpenRouter(settings.openrouter, request);
+      return callOpenRouter(settings.openrouter, request, options);
     case 'cloudflare':
-      return callCloudflare(settings.cloudflare, request);
+      return callCloudflare(settings.cloudflare, request, options);
     default:
       throw new Error(`Unsupported Jev provider: ${String(settings.activeProvider)}`);
   }

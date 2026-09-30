@@ -74,7 +74,8 @@ export function describeHelperKey(settings: AppSettings): HelperKeyStatus {
  */
 export async function generateFieldText(
   settings: AppSettings,
-  context: FieldContext
+  context: FieldContext,
+  options: { signal?: AbortSignal } = {}
 ): Promise<string> {
   const cfg = settings.textHelper;
   const status = describeHelperKey(settings);
@@ -109,7 +110,7 @@ export async function generateFieldText(
     `${baseUrl}/chat/completions`,
     { Authorization: `Bearer ${apiKey}`, ...(isOpenRouter ? OPENROUTER_HEADERS : {}) },
     payload,
-    { label: 'Text helper' }
+    { label: 'Text helper', signal: options.signal }
   );
 
   const rawContent = json?.choices?.[0]?.message?.content;

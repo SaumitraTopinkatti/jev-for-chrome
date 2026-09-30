@@ -20,7 +20,8 @@ export const OPENROUTER_HEADERS = {
 
 export async function callOpenRouter(
   config: OpenRouterConfig,
-  request: JevRequest
+  request: JevRequest,
+  options: { signal?: AbortSignal } = {}
 ): Promise<JevResponse> {
   const apiKey = (config.apiKey || '').trim();
   if (!apiKey) {
@@ -36,7 +37,7 @@ export async function callOpenRouter(
       endpoint,
       { Authorization: `Bearer ${apiKey}`, ...OPENROUTER_HEADERS },
       { model, state: request.state, questions: request.questions },
-      { label: 'OpenRouter Decisions API' }
+      { label: 'OpenRouter Decisions API', signal: options.signal }
     );
   } catch (err: any) {
     const message = err?.message || String(err);

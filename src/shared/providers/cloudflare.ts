@@ -3,7 +3,8 @@ import { postJson } from './http';
 
 export async function callCloudflare(
   config: CloudflareConfig,
-  request: JevRequest
+  request: JevRequest,
+  options: { signal?: AbortSignal } = {}
 ): Promise<JevResponse> {
   const accountId = (config.accountId || '').trim();
   const apiToken = (config.apiToken || '').trim();
@@ -19,8 +20,17 @@ export async function callCloudflare(
     endpoint,
     { Authorization: `Bearer ${apiToken}` },
     { model, input: { state: request.state, questions: request.questions } },
-    { label: 'Cloudflare AI' }
+    { label: 'Cloudflare AI', signal: options.signal }
   );
+
+  // Cloudflare can answer HTTP 200 with { success: false, errors: [...] }.
+  if (json && typeof json === 'object' && (json as any).success === false) {
+    const errors = (json as any).errors;
+    const detail = Array.isArray(errors)
+      ? errors.map((e) => (typeof e === 'string' ? e : e?.message || JSON.stringify(e))).join('; ')
+      : JSON.stringify(errors ?? json).slice(0, 300);
+    throw new Error(`Cloudflare AI error${detail ? `: ${detail}` : ''}`);
+  }
 
   // Cloudflare wraps the response in { success: true, result: ... }
   if (json && typeof json === 'object' && 'result' in json && json.result) {

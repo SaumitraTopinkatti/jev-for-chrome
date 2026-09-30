@@ -397,7 +397,7 @@ export const Options: React.FC = () => {
               On each planner turn, draws the element numbers on the page, captures a screenshot and sends
               both the image and the DOM list to the model, so it can match numbers across the two. Needs a
               vision-capable helper model; screenshots are page-change gated and only the latest is kept.
-              Also offers take_screenshot and screen_act for controls the element list misses.
+              Also offers take_screenshot, screen_act and locate_at for controls the element list misses.
             </p>
           </div>
         </div>
@@ -458,6 +458,26 @@ export const Options: React.FC = () => {
                 }
               />
             </div>
+          </div>
+
+          <div style={styles.field}>
+            <label style={styles.label}>Planner Max Iterations (🧠 mode)</label>
+            <input
+              type="number"
+              min={1}
+              style={styles.input}
+              value={settings.plannerMaxIters}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  plannerMaxIters: Math.max(1, parseInt(e.target.value, 10) || DEFAULT_SETTINGS.plannerMaxIters),
+                })
+              }
+            />
+            <p style={styles.helpText}>
+              Planner mode only: the most planner LLM turns in one run. Counts every turn, including
+              screenshots, locate_at and delegate calls, so keep it above Max Steps. Ignored in Jev mode.
+            </p>
           </div>
 
           <div style={styles.checkboxField}>

@@ -838,6 +838,17 @@ describe('planner vision (labeled screenshots)', () => {
     expect(payload.probe.at).toMatchObject({ index: '1', label: 'Search', offered: true });
   });
 
+  it('stops the planner loop at the configured iteration budget', async () => {
+    planner.mockResolvedValue(planTool('browser_act', { operation: 'WAIT', targetId: 'wait' }));
+
+    const r = plannerRunner({ screenshotsEnabled: false, plannerMaxIters: 2, maxSteps: 50 });
+    await r.startPlanner('Loop forever', 7);
+
+    expect(planner).toHaveBeenCalledTimes(2);
+    expect(r.getProgress().status).toBe('blocked');
+    expect(r.getProgress().lastError).toMatch(/iteration budget of 2/);
+  });
+
   it('keeps the DOM-only path when screenshots are disabled', async () => {
     planner.mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
 

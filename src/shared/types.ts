@@ -48,6 +48,12 @@ export interface AppSettings {
   cloudflare: CloudflareConfig;
   textHelper: TextHelperConfig;
   maxSteps: number;
+  /**
+   * Planner-mode cap on planner LLM turns per run. Counts every turn, including ones that do
+   * not advance a step (nudges, take_screenshot, locate_at, delegates), so it runs ahead of
+   * maxSteps. Jev mode ignores it.
+   */
+  plannerMaxIters: number;
   stepDelayMs: number;
   showOverlay: boolean;
   /** 'jev': current ultrafast loop. 'planner': general LLM primary, Jev as delegate tool. */
@@ -90,6 +96,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     model: TEXT_HELPER_PRESETS.openrouter.model,
   },
   maxSteps: 30,
+  plannerMaxIters: 40,
   stepDelayMs: 300,
   showOverlay: true,
   automationMode: 'jev',
@@ -141,6 +148,11 @@ export function mergeSettings(stored: Partial<AppSettings> | undefined | null): 
   const textModel = (helper.model || '').trim();
   helper.model =
     (helper.baseUrl.includes('openrouter.ai') && OBSOLETE_OPENROUTER_TEXT_MODELS[textModel]) || textModel || preset.model;
+
+  // Guard the runtime cap: a stored 0/NaN/negative would otherwise stop the planner instantly.
+  if (!Number.isFinite(merged.plannerMaxIters) || merged.plannerMaxIters < 1) {
+    merged.plannerMaxIters = DEFAULT_SETTINGS.plannerMaxIters;
+  }
 
   return merged;
 }

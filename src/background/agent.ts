@@ -1207,10 +1207,6 @@ export class AgentRunner {
         this.finish('blocked', `Reached the ${this.progress.maxSteps}-step budget without DONE.`);
         break;
       }
-      if (this.plannerIters >= 15) {
-        this.finish('blocked', 'Reached the planner iteration budget for this run.');
-        break;
-      }
       let cont: boolean;
       try {
         cont = await this.executeOnePlannerStep(token);
@@ -1381,6 +1377,13 @@ export class AgentRunner {
    * Returns false when the run has ended.
    */
   private async executeOnePlannerStep(token: number): Promise<boolean> {
+    // Cap every planner turn, including step-driven runs: nudges, screenshots and locate_at
+    // calls do not advance currentStep, so the step budget alone never bounds them.
+    const iterBudget = this.settings.plannerMaxIters || DEFAULT_SETTINGS.plannerMaxIters;
+    if (this.plannerIters >= iterBudget) {
+      this.finish('blocked', `Reached the planner iteration budget of ${iterBudget} for this run.`);
+      return false;
+    }
     await this.followTab();
     if (token !== this.runToken) return false;
     const tabId = this.activeTabId;

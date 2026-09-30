@@ -67,6 +67,25 @@ export function isNavigationError(message: string): boolean {
 
 const OP_BY_KIND: Record<string, string> = { click: 'CLICK', fill: 'TYPE_TEXT', select: 'SELECT', scroll: '', wait: '', key: '' };
 
+/** Scroll/enter are page-manipulation controls, not targets: viewport-only observation
+ * requires repeating them, so the repeat block ignores them. A scroll that changes
+ * nothing still trips the no-change deadlock guard, and the step budget bounds the rest. */
+const REPEAT_EXEMPT_KINDS = new Set(['scroll', 'key', 'wait']);
+
+/** True for control kinds the repeat block ignores; an unknown kind is never exempt. */
+function isRepeatExempt(kind: string | undefined): boolean {
+  return kind !== undefined && REPEAT_EXEMPT_KINDS.has(kind);
+}
+
+/**
+ * Stable per-target identity for failure counting. Snapshot ids (e1…en) are positional:
+ * after any re-render they can name a different element, so counting or suppressing by
+ * id withholds innocent controls. Kind + label survives re-renders.
+ */
+function stableTargetKey(action: Pick<PageAction, 'kind' | 'label'>): string {
+  return `${action.kind}:${action.label}`;
+}
+
 function readNoul(answer: any): number | undefined {
   const v = answer?.noul ?? answer?.probability;
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : undefined;
@@ -153,6 +172,9 @@ export class AgentRunner {
     this.pendingTab = null;
     this.lastFingerprint = null; // a different document: the previous action's outcome is "opened a tab"
     this.tabNote = pending.closed ? 'the tab closed; back on the previous tab' : 'opened a new tab and switched to it';
+    // A different document: per-target failure history belongs to the old page.
+    this.targetFailureCount.clear();
+    this.lastTargetKey = null;
     await chrome.tabs.update(pending.to, { active: true }).catch(() => undefined);
     await this.waitForTabToLoad(pending.to);
     await this.attachInput(pending.to);
@@ -163,10 +185,12 @@ export class AgentRunner {
   private consecutiveStale = 0;
   private decisionCount = 0;
   private targetFailureCount = new Map<string, number>();
-  private lastTargetActionId: string | null = null;
+  private lastTargetKey: string | null = null;
   private lastStaleNotice: string | null = null;
   private pendingTerminal: string | null = null;
   private vetoed: 'DONE' | 'BLOCKED' | null = null;
+  /** Verdicts already withheld once this run; a repeat proposal is accepted (README: withheld once). */
+  private vetoedBefore = new Set<'DONE' | 'BLOCKED'>();
   /** One inconsistent answer is asked again; a second one ends the run. */
   private invalidAnswerRetried = false;
   /** Text generated for a decision that turned out stale; reused only for an identical helper input. */
@@ -198,10 +222,11 @@ export class AgentRunner {
     this.consecutiveStale = 0;
     this.decisionCount = 0;
     this.targetFailureCount.clear();
-    this.lastTargetActionId = null;
+    this.lastTargetKey = null;
     this.lastStaleNotice = null;
     this.pendingTerminal = null;
     this.vetoed = null;
+    this.vetoedBefore.clear();
     this.invalidAnswerRetried = false;
     this.pendingText = null;
     this.progress = {
@@ -437,9 +462,9 @@ export class AgentRunner {
       last.outcome = describeOutcome(this.lastSummary, summary);
       last.url = snapshot.url;
       last.page_changed = fingerprint !== this.lastFingerprint;
-      if (!last.page_changed && this.lastTargetActionId && last.kind !== 'wait') {
-        const count = (this.targetFailureCount.get(this.lastTargetActionId) || 0) + 1;
-        this.targetFailureCount.set(this.lastTargetActionId, count);
+      if (!last.page_changed && this.lastTargetKey && last.kind !== 'wait') {
+        const count = (this.targetFailureCount.get(this.lastTargetKey) || 0) + 1;
+        this.targetFailureCount.set(this.lastTargetKey, count);
       } else if (last.page_changed) {
         this.targetFailureCount.clear();
       }
@@ -462,15 +487,23 @@ export class AgentRunner {
     // 3. Loop feedback for the model. Toggling the same control (a menu that opens and closes)
     //    changes the page every time, so repeats are tracked separately from "no change".
     let warning: string | undefined;
-    const repeatedAction = last?.action && last.kind !== 'wait' ? last.action : null;
+    const repeatedAction = last?.action && !isRepeatExempt(last.kind) ? last.action : null;
     const repeated = repeatedAction ? this.repeatCount(repeatedAction) : 0;
     if (repeated >= REPEAT_LIMIT) {
       this.finish('blocked', `The same action "${repeatedAction}" was repeated ${repeated} times without reaching the goal.`);
       return false;
     }
-    const suppressedTargetIds = Array.from(this.targetFailureCount.entries())
-      .filter(([, count]) => count >= 2)
-      .map(([id]) => id);
+    // Failure counts are keyed by stable kind+label identity; resolve them to this
+    // snapshot's positional ids so suppression always names the current elements.
+    const suppressedKeys = new Set(
+      Array.from(this.targetFailureCount.entries())
+        .filter(([, count]) => count >= 2)
+        .map(([key]) => key)
+    );
+    const suppressedTargetIds: string[] = [];
+    for (const a of snapshot.actions) {
+      if (a.node !== undefined && suppressedKeys.has(stableTargetKey(a))) suppressedTargetIds.push(a.id);
+    }
     if (last && last.page_changed === false && last.kind !== 'wait') {
       warning = `ATTENTION: Previous action "${last.action}" resulted in NO visible change on the page. Do NOT repeat the exact same action. Try an alternative target, scroll, or submit button.`;
     } else if (repeated >= 2 && repeatedAction) {
@@ -529,15 +562,17 @@ export class AgentRunner {
     const goalDone = readNoul(jevResponse.answers?.goal_done);
     const stuck = readNoul(jevResponse.answers?.stuck);
 
-    if (operation === 'DONE' && goalDone !== undefined && goalDone < GOAL_DONE_MIN) {
+    if (operation === 'DONE' && goalDone !== undefined && goalDone < GOAL_DONE_MIN && !this.vetoedBefore.has('DONE')) {
       this.vetoed = 'DONE';
+      this.vetoedBefore.add('DONE');
       this.lastStaleNotice = `ATTENTION: DONE was proposed, but the independent goal check says the task is not achieved yet (probability ${goalDone.toFixed(2)}). Something in the task is still missing; act on it.`;
       this.addLog({ step: this.progress.currentStep, timestamp: Date.now(), operation: 'DONE (vetoed)', confidence: operationAnswer.confidence, latencyMs, provider, probabilities: operationAnswer.probabilities, goalDone, stuck });
       this.broadcastUpdate();
       return true;
     }
-    if (operation === 'BLOCKED' && stuck !== undefined && stuck < STUCK_MIN && this.history.length < REPEAT_WINDOW) {
+    if (operation === 'BLOCKED' && stuck !== undefined && stuck < STUCK_MIN && !this.vetoedBefore.has('BLOCKED')) {
       this.vetoed = 'BLOCKED';
+      this.vetoedBefore.add('BLOCKED');
       this.lastStaleNotice = `ATTENTION: BLOCKED was proposed, but the independent progress check does not see a dead end (stuck probability ${stuck.toFixed(2)}). Choose a control that moves toward the task.`;
       this.addLog({ step: this.progress.currentStep, timestamp: Date.now(), operation: 'BLOCKED (vetoed)', confidence: operationAnswer.confidence, latencyMs, provider, probabilities: operationAnswer.probabilities, goalDone, stuck });
       this.broadcastUpdate();
@@ -621,7 +656,7 @@ export class AgentRunner {
             this.finish('error', `Text helper failed: ${message}`);
             return false;
           }
-          this.targetFailureCount.set(targetAction.id, (this.targetFailureCount.get(targetAction.id) || 0) + 1);
+          this.targetFailureCount.set(stableTargetKey(targetAction), (this.targetFailureCount.get(stableTargetKey(targetAction)) || 0) + 1);
           this.lastStaleNotice = `ATTENTION: No value for the field "${targetAction.label}" can be derived from the goal, so TYPE_TEXT there is not possible. Use links, buttons or other controls instead.`;
           this.broadcastUpdate();
           return true;
@@ -650,7 +685,7 @@ export class AgentRunner {
         }
         // A covered or vanished target counts as a miss: the model is told, and after two
         // misses the target is withheld while alternatives exist.
-        this.targetFailureCount.set(targetAction.id, (this.targetFailureCount.get(targetAction.id) || 0) + 1);
+        this.targetFailureCount.set(stableTargetKey(targetAction), (this.targetFailureCount.get(stableTargetKey(targetAction)) || 0) + 1);
         this.lastStaleNotice = `ATTENTION: The target "${targetAction.label}" could not be acted on (${result.message}). If an overlay or dialog is open, act inside it or close it; otherwise choose a different target.`;
         this.broadcastUpdate();
         // A covered or vanished target usually means the page is still loading or animating
@@ -674,7 +709,7 @@ export class AgentRunner {
     this.consecutiveStale = 0;
     this.invalidAnswerRetried = false;
     this.pendingText = null;
-    this.lastTargetActionId = targetAction.id;
+    this.lastTargetKey = stableTargetKey(targetAction);
     this.history.push({
       step: this.progress.currentStep + 1,
       action: `${operation} ${targetAction.label}`,
@@ -727,7 +762,7 @@ export class AgentRunner {
 
   /** How often the same operation + label was executed within the recent window (counting the last action). */
   private repeatCount(action: string): number {
-    return this.history.slice(-REPEAT_WINDOW).filter((h) => h.action === action && h.kind !== 'wait').length;
+    return this.history.slice(-REPEAT_WINDOW).filter((h) => h.action === action && !isRepeatExempt(h.kind)).length;
   }
 
   private addLog(log: AgentStepLog): void {

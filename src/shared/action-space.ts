@@ -108,6 +108,19 @@ export function buildActionSpace(
         }
       }
     }
+    // Keep the element table consistent with the surviving targets: an element whose
+    // operations were all withheld must not advertise them, or the model picks an index
+    // it can see but that is not a valid target (invalid choice → retry → run error).
+    for (const element of elements) element.operations = [];
+    for (const [operation, group] of Object.entries(targets)) {
+      for (const targetKey of Object.keys(group)) {
+        const element = elements[parseInt(targetKey.split(':')[0], 10) - 1];
+        if (element && !element.operations.includes(operation)) element.operations.push(operation);
+      }
+    }
+    for (let i = elements.length - 1; i >= 0; i--) {
+      if (elements[i].operations.length === 0) elements.splice(i, 1);
+    }
   }
 
   const operations: Record<string, string> = {};

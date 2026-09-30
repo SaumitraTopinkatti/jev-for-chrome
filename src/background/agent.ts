@@ -159,7 +159,15 @@ export class AgentRunner {
   }
 
   private onTabRemoved(tabId: number): void {
-    if (tabId !== this.activeTabId || this.tabStack.length === 0) return;
+    // A closed tab is never a way back, no matter where it sits on the stack: drop it so a
+    // later return cannot land on a dead tab (e.g. the opener closed while on the child).
+    this.tabStack = this.tabStack.filter((id) => id !== tabId);
+    if (tabId !== this.activeTabId) return;
+    if (this.tabStack.length === 0) {
+      // Nothing to return to; followTab resolves the window's current tab (to: -1).
+      this.pendingTab = { from: tabId, to: -1, closed: true };
+      return;
+    }
     const back = this.tabStack.pop()!;
     this.pendingTab = { from: tabId, to: back, closed: true };
     this.activeTabId = back;
@@ -170,6 +178,25 @@ export class AgentRunner {
     const pending = this.pendingTab;
     if (!pending) return;
     this.pendingTab = null;
+    if (pending.to === -1) {
+      // The active tab closed with no opener on the stack: continue on whatever tab is
+      // now frontmost instead of observing a dead tab id.
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+      const current = tabs?.[0]?.id;
+      if (current === undefined) {
+        this.activeTabId = null;
+        return;
+      }
+      this.activeTabId = current;
+      this.lastFingerprint = null;
+      this.tabNote = 'the tab closed; continuing on the current tab';
+      this.targetFailureCount.clear();
+      this.lastTargetKey = null;
+      await this.waitForTabToLoad(current);
+      await this.attachInput(current);
+      this.sendStatus({ text: this.tabNote });
+      return;
+    }
     this.lastFingerprint = null; // a different document: the previous action's outcome is "opened a tab"
     this.tabNote = pending.closed ? 'the tab closed; back on the previous tab' : 'opened a new tab and switched to it';
     // A different document: per-target failure history belongs to the old page.
@@ -200,6 +227,15 @@ export class AgentRunner {
     this.settings = settings;
     if (this.progress.status !== 'running') {
       this.progress.maxSteps = settings.maxSteps || DEFAULT_SETTINGS.maxSteps;
+      return;
+    }
+    // Mid-run change: trusted input follows the toggle immediately. Turning it off detaches
+    // (act also checks the setting, so a detach race cannot keep CDP in use); turning it on
+    // attaches now instead of waiting for the next tab switch.
+    if (!settings.trustedInput) {
+      void this.input.detach();
+    } else if (this.activeTabId !== null) {
+      void this.attachInput(this.activeTabId);
     }
   }
 
@@ -650,12 +686,9 @@ export class AgentRunner {
             return false;
           }
           // The helper could not derive a value from the goal: the field is not the way
-          // forward. Tell the model and withhold the field after two attempts.
-          this.consecutiveStale++;
-          if (this.consecutiveStale >= MAX_CONSECUTIVE_STALE) {
-            this.finish('error', `Text helper failed: ${message}`);
-            return false;
-          }
+          // forward. Tell the model and withhold the field after two attempts; the run
+          // continues (this counter is separate from the page-stale counter, so refusals
+          // on different fields never look like a stuck page).
           this.targetFailureCount.set(stableTargetKey(targetAction), (this.targetFailureCount.get(stableTargetKey(targetAction)) || 0) + 1);
           this.lastStaleNotice = `ATTENTION: No value for the field "${targetAction.label}" can be derived from the goal, so TYPE_TEXT there is not possible. Use links, buttons or other controls instead.`;
           this.broadcastUpdate();
@@ -795,7 +828,9 @@ export class AgentRunner {
    */
   private async act(tabId: number, action: PageAction, text?: string, token?: number): Promise<ActResult> {
     const stopped = () => token !== undefined && token !== this.runToken;
-    if (this.input.attachedTab !== tabId) {
+    // M10: the setting is authoritative, not the attachment state — a mid-run toggle off
+    // takes effect even if the detach has not landed yet.
+    if (!this.settings.trustedInput || this.input.attachedTab !== tabId) {
       const result: ActResult | undefined = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_ACT', action, text });
       return result ?? { ok: false, code: 'failed', message: 'No reply from the page.' };
     }

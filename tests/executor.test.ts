@@ -105,12 +105,26 @@ describe('executeAction', () => {
     button.addEventListener('click', () => clicks++);
 
     const snapshot = takeSnapshot()!;
-    (document.getElementById('q') as HTMLInputElement).value = 'changed by the page';
+    button.textContent = 'Searching…'; // the target itself changed since the decision
 
     const res = await executeAction(actionFor(snapshot.actions, (a) => a.label === 'Search'));
     expect(res.ok).toBe(false);
     expect((res as any).code).toBe('stale');
     expect(clicks).toBe(0);
+  });
+
+  it('still acts when only an unrelated input changed since the decision', async () => {
+    document.body.innerHTML = '<input id="q" aria-label="Query" value=""><button id="b">Search</button>';
+    const button = document.getElementById('b')!;
+    let clicks = 0;
+    button.addEventListener('click', () => clicks++);
+
+    const snapshot = takeSnapshot()!;
+    (document.getElementById('q') as HTMLInputElement).value = 'changed by the page';
+
+    const res = await executeAction(actionFor(snapshot.actions, (a) => a.label === 'Search'));
+    expect(res).toEqual({ ok: true, via: 'synthetic' });
+    expect(clicks).toBe(1);
   });
 
   it('treats a covered target as stale', async () => {

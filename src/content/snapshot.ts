@@ -213,33 +213,25 @@ const innerText = (e: Element | null | undefined): string => {
   return typeof t === 'string' ? t : e.textContent || '';
 };
 
+/**
+ * What a decision depends on that the target guard does not already cover: the document
+ * (a navigation replaces it) and the URL (an SPA navigation keeps the DOM). Scroll,
+ * viewport and unrelated input values are deliberately excluded: the guard carries the
+ * target and its immediate context, and anything wider made clicks go stale on live pages
+ * (a clock ticking, a chat updating, a scroll) that a person could still act on.
+ */
 function pageKey(cache: JevCache): unknown[] {
-  return [
-    performance.timeOrigin,
-    location.href,
-    window.scrollX,
-    window.scrollY,
-    window.innerWidth,
-    window.innerHeight,
-    Array.from(document.querySelectorAll('input,textarea,select'))
-      .filter(safe)
-      .map((el) => {
-        const inp = el as HTMLInputElement;
-        return [
-          identity(cache, el),
-          inp.value,
-          inp.checked,
-          (inp as any).selectedIndex,
-          inp.disabled,
-          inp.readOnly,
-        ];
-      }),
-  ];
+  void cache;
+  return [performance.timeOrigin, location.href];
 }
 
 function guard(cache: JevCache, e: Element | null | undefined): unknown[] | null {
   if (!e || !e.isConnected || !isVisible(e)) return null;
-  const scope = e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]') || e.parentElement;
+  // The target plus its immediate context: the enclosing form or dialog when there is one,
+  // otherwise the parent element. Wider scopes (article, list, row) carry live content —
+  // a carousel, chat or clock in the same container — that would invalidate the decision
+  // without changing what the target does.
+  const scope = e.closest('form,dialog,[role="dialog"]') || e.parentElement;
   const inp = e as HTMLInputElement;
   return [
     identity(cache, e),
@@ -255,7 +247,7 @@ function guard(cache: JevCache, e: Element | null | undefined): unknown[] | null
     e.getAttribute('aria-checked'),
     e.getAttribute('aria-selected'),
     e.getAttribute('href'),
-    innerText(scope).slice(0, 6000),
+    innerText(scope).slice(0, 1000),
   ];
 }
 
@@ -402,7 +394,6 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
     document.title,
     pageText,
     semantics,
-    key[6],
   ];
 
   const omitted_actions = Math.max(0, actions.length - 250);

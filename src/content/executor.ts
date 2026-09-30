@@ -136,9 +136,17 @@ export async function prepareAction(action: PageAction, text?: string): Promise<
     if (inp.readOnly || element.getAttribute('aria-readonly') === 'true') return fail('disabled', 'Target field became read-only.');
     if (!element.isContentEditable && DIRECT_VALUE_TYPES.has(inp.type)) {
       element.focus();
-      setNativeValue(inp, text ?? '');
-      fireInput(element, text ?? '');
+      const wanted = text ?? '';
+      setNativeValue(inp, wanted);
+      fireInput(element, wanted);
       await settle();
+      // M9: the browser silently drops values it cannot parse (natural-language text
+      // in a date field becomes ''). A 'failed' tells the model and withholds the
+      // target after two misses instead of recording a phantom success. ('invalid'
+      // would end the run; the next observation usually lets the model recover.)
+      if (wanted !== '' && inp.value === '') {
+        return fail('failed', `The field rejected "${wanted}" (${describeElement(element)} needs a ${inp.type} value).`);
+      }
       return { ok: true, done: true };
     }
   }

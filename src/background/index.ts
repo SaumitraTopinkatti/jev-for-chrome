@@ -59,18 +59,19 @@ chrome.runtime.onMessage.addListener(
           case 'START_AGENT': {
             const goal = (message.goal || '').trim();
             if (!goal) throw new Error('Goal is empty');
-            await refreshRunnerSettings();
+            const settings = await refreshRunnerSettings();
             const tabId = await resolveTabId(message.tabId);
-            void runner.start(goal, tabId); // runs in the background; progress arrives via PROGRESS_UPDATE
+            // Planner mode: the general LLM drives, Jev serves as a delegate tool.
+            void (settings.automationMode === 'planner' ? runner.startPlanner(goal, tabId) : runner.start(goal, tabId)); // runs in the background; progress arrives via PROGRESS_UPDATE
             sendResponse({ success: true });
             return;
           }
           case 'STEP_AGENT': {
             const goal = (message.goal || runner.getProgress().goal || '').trim();
             if (!goal) throw new Error('Goal is empty');
-            await refreshRunnerSettings();
+            const settings = await refreshRunnerSettings();
             const tabId = await resolveTabId(message.tabId);
-            void runner.step(goal, tabId);
+            void (settings.automationMode === 'planner' ? runner.stepPlanner(goal, tabId) : runner.step(goal, tabId));
             sendResponse({ success: true });
             return;
           }

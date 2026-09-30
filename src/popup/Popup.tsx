@@ -3,6 +3,7 @@ import {
   AgentProgress,
   AgentStepLog,
   AppSettings,
+  AutomationMode,
   DEFAULT_SETTINGS,
   ExtensionMessage,
 } from '../shared/types';
@@ -34,6 +35,9 @@ export const Popup: React.FC = () => {
     logs: [],
   });
   const [showBadges, setShowBadges] = useState(true);
+  // Errors from starting/stepping (no active tab, storage failure) arrive as the
+  // sendMessage response, which the popup used to ignore, failing silently.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     // 1. Get settings
@@ -64,14 +68,20 @@ export const Popup: React.FC = () => {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
 
+  const checkStartResponse = (response?: { success?: boolean; error?: string }) => {
+    if (chrome.runtime.lastError) setActionError(chrome.runtime.lastError.message || 'Could not start the agent.');
+    else if (response && response.success === false) setActionError(response.error || 'Could not start the agent.');
+    else setActionError(null);
+  };
+
   const handleStart = () => {
     if (!goal.trim()) return;
-    chrome.runtime.sendMessage({ type: 'START_AGENT', goal: goal.trim(), tabId: targetTabId() });
+    chrome.runtime.sendMessage({ type: 'START_AGENT', goal: goal.trim(), tabId: targetTabId() }, checkStartResponse);
   };
 
   const handleStep = () => {
     if (!goal.trim()) return;
-    chrome.runtime.sendMessage({ type: 'STEP_AGENT', goal: goal.trim(), tabId: targetTabId() });
+    chrome.runtime.sendMessage({ type: 'STEP_AGENT', goal: goal.trim(), tabId: targetTabId() }, checkStartResponse);
   };
 
   const handleStop = () => {
@@ -84,6 +94,13 @@ export const Popup: React.FC = () => {
     chrome.runtime.sendMessage({ type: 'TOGGLE_OVERLAY', show: nextVal, tabId: targetTabId() });
   };
 
+  const handleModeChange = (mode: AutomationMode) => {
+    if (isRunning || settings.automationMode === mode) return;
+    const next = { ...settings, automationMode: mode };
+    setSettings(next);
+    chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings: next });
+  };
+
   const openOptions = () => {
     chrome.runtime.openOptionsPage();
   };
@@ -93,6 +110,7 @@ export const Popup: React.FC = () => {
     const trace = {
       goal: progress.goal,
       status: progress.status,
+      mode: settings.automationMode,
       step: `${progress.currentStep}/${progress.maxSteps}`,
       error: progress.lastError,
       provider: settings.activeProvider,
@@ -105,6 +123,7 @@ export const Popup: React.FC = () => {
         confidence: l.confidence,
         latencyMs: l.latencyMs,
         probabilities: l.probabilities,
+        diff: l.diff,
       })),
     };
     try {
@@ -180,6 +199,24 @@ export const Popup: React.FC = () => {
         </div>
       </div>
 
+      {/* Mode switch */}
+      <div style={styles.modeRow}>
+        {(['jev', 'planner'] as AutomationMode[]).map((m) => (
+          <button
+            key={m}
+            disabled={isRunning}
+            onClick={() => handleModeChange(m)}
+            title={m === 'jev' ? 'Jev-Ultrafast: Jev decides every step' : 'Planner: LLM drives, Jev handles text-free chains'}
+            style={{
+              ...styles.modeTab,
+              ...(settings.automationMode === m ? styles.modeTabActive : {}),
+            }}
+          >
+            {m === 'jev' ? '⚡ Jev-Ultrafast' : '🧠 Planner + Jev'}
+          </button>
+        ))}
+      </div>
+
       {/* Controls */}
       <div style={styles.controlsRow}>
         {!isRunning ? (
@@ -245,6 +282,9 @@ export const Popup: React.FC = () => {
         {progress.lastError && (
           <div style={styles.errorBanner}>{progress.lastError}</div>
         )}
+        {actionError && (
+          <div style={styles.errorBanner}>{actionError}</div>
+        )}
         {progress.inputNote && (
           <div style={styles.noteBanner}>{progress.inputNote}</div>
         )}
@@ -282,6 +322,11 @@ export const Popup: React.FC = () => {
                 {log.targetValue && (
                   <div style={styles.textValueRow}>
                     Typed: <code>"{log.targetValue}"</code>
+                  </div>
+                )}
+                {log.diff && (
+                  <div style={styles.diffRow} title="What changed on the page after this step">
+                    Δ {log.diff}
                   </div>
                 )}
                 {log.confidence !== undefined && (
@@ -402,6 +447,27 @@ const styles: Record<string, any> = {
     display: 'flex',
     gap: 8,
     marginBottom: 14,
+  },
+  modeRow: {
+    display: 'flex',
+    gap: 6,
+    marginBottom: 10,
+  },
+  modeTab: {
+    flex: 1,
+    padding: '6px 8px',
+    backgroundColor: '#1e293b',
+    border: '1px solid #334155',
+    color: '#94a3b8',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  modeTabActive: {
+    backgroundColor: '#312e81',
+    borderColor: '#6366f1',
+    color: '#ffffff',
   },
   btn: {
     padding: '8px 12px',
@@ -566,6 +632,13 @@ const styles: Record<string, any> = {
     fontSize: 11,
     color: '#a7f3d0',
     marginTop: 2,
+  },
+  diffRow: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 3,
+    lineHeight: 1.4,
+    wordBreak: 'break-word',
   },
   confidenceBar: {
     position: 'relative',

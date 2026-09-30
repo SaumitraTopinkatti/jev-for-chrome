@@ -5,6 +5,7 @@ import {
   highlightTarget,
   removeStatusBanner,
   renderElementBadges,
+  renderIndexedBadges,
   showStatusBanner,
 } from './overlay';
 import { clickRect, getCache, takeSnapshot } from './snapshot';
@@ -67,6 +68,23 @@ function boot(): void {
           } catch (err: any) {
             sendResponse({ success: false, error: err?.message || String(err) });
           }
+          return false;
+        }
+
+        case 'CONTENT_LABEL': {
+          try {
+            renderIndexedBadges(message.entries);
+          } catch (err: any) {
+            sendResponse({ success: false, error: err?.message || String(err) });
+            return false;
+          }
+          if (message.entries.length) {
+            // The background captures the tab right after this resolves. Wait two frames so
+            // the badges are actually painted, otherwise the screenshot misses them.
+            requestAnimationFrame(() => requestAnimationFrame(() => sendResponse({ success: true })));
+            return true; // async sendResponse
+          }
+          sendResponse({ success: true });
           return false;
         }
 

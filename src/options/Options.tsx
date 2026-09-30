@@ -383,22 +383,61 @@ export const Options: React.FC = () => {
               }
             />
           </div>
+
+          <div style={styles.checkboxField}>
+            <label style={styles.checkboxLabel}>
+              <input
+                type="checkbox"
+                checked={settings.screenshotsEnabled}
+                onChange={(e) => setSettings({ ...settings, screenshotsEnabled: e.target.checked })}
+              />
+              Planner vision: label elements + screenshot (vision models only, off by default)
+            </label>
+            <p style={styles.helpText}>
+              On each planner turn, draws the element numbers on the page, captures a screenshot and sends
+              both the image and the DOM list to the model, so it can match numbers across the two. Needs a
+              vision-capable helper model; screenshots are page-change gated and only the latest is kept.
+              Also offers take_screenshot and screen_act for controls the element list misses.
+            </p>
+          </div>
         </div>
 
         {/* Agent Execution Settings */}
         <div style={styles.section}>
           <label style={styles.sectionLabel}>Agent Runtime Parameters</label>
+          <div style={styles.field}>
+            <label style={styles.label}>Automation Mode</label>
+            <div style={styles.providerTabs}>
+              {(['jev', 'planner'] as const).map((m) => (
+                <button
+                  key={m}
+                  style={{
+                    ...styles.providerTab,
+                    ...(settings.automationMode === m ? styles.providerTabActive : {}),
+                  }}
+                  onClick={() => setSettings({ ...settings, automationMode: m })}
+                >
+                  {m === 'jev' ? '⚡ Jev-Ultrafast' : '🧠 Planner + Jev'}
+                </button>
+              ))}
+            </div>
+            <p style={styles.helpText}>
+              Jev-Ultrafast: Jev decides every step. Planner + Jev: the text-helper LLM plans and types,
+              delegating text-free chains to Jev (planner reuses the Text Helper provider above).
+            </p>
+          </div>
           <div style={styles.grid2}>
             <div style={styles.field}>
               <label style={styles.label}>Max Steps</label>
               <input
                 type="number"
+                min={1}
                 style={styles.input}
                 value={settings.maxSteps}
                 onChange={(e) =>
                   setSettings({
                     ...settings,
-                    maxSteps: parseInt(e.target.value, 10) || 30,
+                    maxSteps: Math.max(1, parseInt(e.target.value, 10) || 30),
                   })
                 }
               />
@@ -408,12 +447,13 @@ export const Options: React.FC = () => {
               <label style={styles.label}>Step Delay (ms)</label>
               <input
                 type="number"
+                min={0}
                 style={styles.input}
                 value={settings.stepDelayMs}
                 onChange={(e) =>
                   setSettings({
                     ...settings,
-                    stepDelayMs: parseInt(e.target.value, 10) || 300,
+                    stepDelayMs: Math.max(0, parseInt(e.target.value, 10) || 300),
                   })
                 }
               />

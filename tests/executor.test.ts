@@ -421,4 +421,58 @@ describe('prepareAction', () => {
     expect(res).toMatchObject({ ok: false, code: 'covered' });
     expect(clicks).toBe(0);
   });
+
+  it('M9: fails the step when the browser rejects a direct value instead of recording success', async () => {
+    document.body.innerHTML = '<label>When <input id="d" type="date"></label>';
+    const snapshot = takeSnapshot()!;
+    const res = await prepareAction(
+      actionFor(snapshot.actions, (a) => a.kind === 'fill' && a.label === 'When'),
+      'next Friday'
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe('failed');
+      expect(res.message).toMatch(/rejected/);
+    }
+    expect((document.getElementById('d') as HTMLInputElement).value).toBe('');
+  });
+
+  it('M9: accepts a parseable direct value', async () => {
+    document.body.innerHTML = '<label>When <input id="d" type="date"></label>';
+    const snapshot = takeSnapshot()!;
+    const res = await prepareAction(
+      actionFor(snapshot.actions, (a) => a.kind === 'fill' && a.label === 'When'),
+      '2026-10-01'
+    );
+    expect(res).toEqual({ ok: true, done: true });
+    expect((document.getElementById('d') as HTMLInputElement).value).toBe('2026-10-01');
+  });
+});
+
+describe('payload caps (M8)', () => {
+  beforeEach(() => {
+    delete (window as any).__jevFast;
+    fakeLayout();
+  });
+
+  it('truncates long labels and values, and caps options per select', () => {
+    const longLabel = 'L'.repeat(500);
+    let options = '';
+    // 151 options: the first is auto-selected, so 150 are offered and 100 survive.
+    for (let i = 0; i < 151; i++) options += `<option value="v${i}">Option ${i} ${'x'.repeat(300)}</option>`;
+    document.body.innerHTML = `
+      <button aria-label="${longLabel}">ok</button>
+      <label>Big <input type="text" value="${'v'.repeat(500)}"></label>
+      <select aria-label="Choices">${options}</select>`;
+    const snapshot = takeSnapshot()!;
+    for (const a of snapshot.actions) {
+      expect(a.label.length).toBeLessThanOrEqual(200);
+      if (a.value !== undefined) expect(a.value.length).toBeLessThanOrEqual(200);
+    }
+    // The first option is auto-selected, so v1..v150 are offered but only 100 survive the cap.
+    expect(snapshot.actions.filter((a) => a.kind === 'select')).toHaveLength(100);
+    expect(snapshot.omitted_actions).toBe(50);
+    // Exact-match fields stay exact: the first offered option value still selects.
+    expect(snapshot.actions.find((a) => a.kind === 'select')?.value).toBe('v1');
+  });
 });

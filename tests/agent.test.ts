@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRunner } from '../src/background/agent';
+import { callPlanner } from '../src/shared/planner';
 import { callJevProvider } from '../src/shared/providers';
 import { generateFieldText } from '../src/shared/text-helper';
 import { ActResult, ChoiceQuestion, DEFAULT_SETTINGS, PageAction, PageSnapshot } from '../src/shared/types';
@@ -12,9 +13,14 @@ vi.mock('../src/shared/text-helper', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/shared/text-helper')>()),
   generateFieldText: vi.fn(),
 }));
+vi.mock('../src/shared/planner', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/shared/planner')>()),
+  callPlanner: vi.fn(),
+}));
 
 const jev = vi.mocked(callJevProvider);
 const textHelper = vi.mocked(generateFieldText);
+const planner = vi.mocked(callPlanner);
 
 function snapshot(overrides: Partial<PageSnapshot> = {}): PageSnapshot {
   const actions: PageAction[] = [
@@ -84,6 +90,7 @@ function installChrome(page: Page) {
       onRemoved: { addListener: vi.fn((fn: any) => { removed.push(fn); }) },
       update: vi.fn(async () => ({})),
       query: vi.fn(),
+      captureVisibleTab: vi.fn((_opts: unknown, cb: (url: string) => void) => cb('data:image/jpeg;base64,AAA')),
     },
     scripting: { executeScript: vi.fn() },
     runtime: { sendMessage: vi.fn(() => Promise.resolve()) },
@@ -675,5 +682,91 @@ describe('trusted input (chrome.debugger)', () => {
 
     expect(page.sent.filter((m) => m.type === 'CONTENT_ACT')).toHaveLength(1);
     expect(r.getProgress().inputNote).toMatch(/Could not attach/);
+  });
+});
+
+describe('planner vision (labeled screenshots)', () => {
+  let page: Page;
+  let chromeMock: ReturnType<typeof installChrome>;
+
+  const planTool = (name: string, args: Record<string, any>) =>
+    ({
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name, arguments: JSON.stringify(args) } }],
+      },
+      toolCall: { name, args },
+      content: '',
+      finishReason: 'tool_calls',
+    }) as any;
+
+  const plannerRunner = (overrides: Record<string, unknown> = {}) => {
+    const r = new AgentRunner();
+    r.setSettings({
+      ...DEFAULT_SETTINGS,
+      stepDelayMs: 0,
+      maxSteps: 5,
+      automationMode: 'planner',
+      screenshotsEnabled: true,
+      trustedInput: false,
+      ...overrides,
+    });
+    return r;
+  };
+
+  beforeEach(() => {
+    planner.mockReset();
+    jev.mockReset();
+    textHelper.mockReset();
+    page = { snapshot: snapshot(), act: () => ({ ok: true, via: 'synthetic' }), sent: [] };
+    chromeMock = installChrome(page);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('labels the offered elements and attaches a described screenshot to the observation', async () => {
+    planner.mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
+
+    await plannerRunner().stepPlanner('Search', 7);
+
+    const labels = page.sent.filter((m) => m.type === 'CONTENT_LABEL');
+    expect(labels[0]?.entries).toEqual([
+      { index: '1', node: 1 },
+      { index: '2', node: 2 }, // fill + "Open" click share one node → one label
+    ]);
+    // Labels are removed right after the capture.
+    expect(labels[1]?.entries).toEqual([]);
+
+    const messages = planner.mock.calls[0][1];
+    const parts = messages.find((m) => Array.isArray(m.content))?.content as any[];
+    expect(parts[0].type).toBe('text');
+    expect(parts[0].text).toContain('"goal":"Search"');
+    expect(parts[1].text).toContain('#4f46e5');
+    expect(parts[2]).toMatchObject({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAA' } });
+  });
+
+  it('reuses the screenshot while the page is unchanged, then captures again after it changes', async () => {
+    planner
+      .mockResolvedValueOnce(planTool('browser_act', { operation: 'WAIT', targetId: 'wait' }))
+      .mockResolvedValueOnce(planTool('browser_act', { operation: 'WAIT', targetId: 'wait' }))
+      .mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
+    const r = plannerRunner();
+    await r.stepPlanner('Wait', 7);
+    await r.stepPlanner('Wait', 7);
+    expect(chromeMock.tabs.captureVisibleTab).toHaveBeenCalledTimes(1);
+
+    page.snapshot = snapshot({ text: 'now different', url: 'https://example.com/next' });
+    await r.stepPlanner('Wait', 7);
+    expect(chromeMock.tabs.captureVisibleTab).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the DOM-only path when screenshots are disabled', async () => {
+    planner.mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
+
+    await plannerRunner({ screenshotsEnabled: false }).stepPlanner('Search', 7);
+
+    expect(page.sent.some((m) => m.type === 'CONTENT_LABEL')).toBe(false);
+    expect(chromeMock.tabs.captureVisibleTab).not.toHaveBeenCalled();
+    expect(planner.mock.calls[0][1].some((m) => Array.isArray(m.content))).toBe(false);
   });
 });

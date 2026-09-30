@@ -5,6 +5,9 @@
 export type JevProviderType = 'typesafe' | 'openrouter' | 'cloudflare';
 export type TextHelperProvider = 'openrouter' | 'deepseek' | 'openai';
 
+/** Which loop drives the tab: Jev alone, or a planner LLM with Jev as a delegate tool. */
+export type AutomationMode = 'jev' | 'planner';
+
 export interface TypeSafeConfig {
   apiKey: string;
   model: string;
@@ -47,6 +50,13 @@ export interface AppSettings {
   maxSteps: number;
   stepDelayMs: number;
   showOverlay: boolean;
+  /** 'jev': current ultrafast loop. 'planner': general LLM primary, Jev as delegate tool. */
+  automationMode: AutomationMode;
+  /**
+   * Planner-only, off by default: offer the take_screenshot tool to the planner LLM.
+   * Only useful for vision-capable models; each shot costs significant tokens.
+   */
+  screenshotsEnabled: boolean;
   /**
    * Dispatch clicks and keystrokes through the DevTools protocol (chrome.debugger) so pages
    * receive trusted input, as a person's mouse and keyboard would produce. Needs the optional
@@ -82,6 +92,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxSteps: 30,
   stepDelayMs: 300,
   showOverlay: true,
+  automationMode: 'jev',
+  screenshotsEnabled: false,
   trustedInput: true,
 };
 
@@ -272,12 +284,46 @@ export interface AgentStepLog {
   targetValue?: string;
   confidence?: number;
   latencyMs: number;
-  provider: JevProviderType;
+  /** 'planner' marks a direct planner act; otherwise the Jev provider that decided. */
+  provider: JevProviderType | 'planner';
   probabilities?: Record<string, number>;
   /** Independent cross-checks answered in the same request (0..1). */
   goalDone?: number;
   stuck?: number;
   error?: string;
+  /** Compact per-step UI diff, e.g. 'page content changed; controls +2 -1 ~0: ...'. */
+  diff?: string;
+}
+
+/**
+ * Every Jev attempt inside one jev_delegate call, in order — including misses the
+ * Jev loop itself would shrug off (covered/disabled/stale). The planner sees silent
+ * failures instead of trusting a bare DONE.
+ */
+export interface JevSubStep {
+  n: number;
+  op: string;
+  target: string;
+  targetId?: string;
+  ok: boolean;
+  code?: string;
+  outcome: string;
+  pageChanged: boolean;
+  url: string;
+  /** Same compact line as AgentStepLog.diff. */
+  diff: string;
+  latencyMs?: number;
+  confidence?: number;
+}
+
+export interface JevDelegateResult {
+  status: 'done' | 'blocked' | 'error';
+  reason: string;
+  steps: JevSubStep[];
+  endUrl: string;
+  endTitle: string;
+  /** Page text excerpt at handoff so the planner can verify without re-reading. */
+  excerpt: string;
 }
 
 export interface AgentProgress {
@@ -303,6 +349,12 @@ export type ExtensionMessage =
   | { type: 'PROGRESS_UPDATE'; progress: AgentProgress }
   | { type: 'PING' }
   | { type: 'CONTENT_OBSERVE' }
+  /**
+   * Planner vision: draw a numbered badge on each listed element, the number being the
+   * element's `index` in the observation, so a screenshot can be correlated with the DOM
+   * table. An empty list clears the badges.
+   */
+  | { type: 'CONTENT_LABEL'; entries: Array<{ index: string; node: number }> }
   /** Whole action inside the page with synthetic events (fallback when trusted input is off). */
   | { type: 'CONTENT_ACT'; action: PageAction; text?: string }
   /** Checks, scrolls and focuses the target; returns the point for the background's trusted input. */

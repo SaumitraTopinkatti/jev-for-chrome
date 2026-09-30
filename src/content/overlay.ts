@@ -24,6 +24,38 @@ export function clearBadges(): void {
   overlayContainer?.querySelectorAll('.__jev_badge').forEach((b) => b.remove());
 }
 
+export interface BadgeEntry {
+  /** Text drawn in the box; equals the element `index` in the observation. */
+  index: string;
+  /** Code-owned DOM node identity in the content script cache. */
+  node: number;
+}
+
+/**
+ * Draws one badge box at the element's top-left corner. Coordinates are viewport-relative
+ * (the container is fixed, so the scroll offset is deliberately not added). The visible
+ * style — solid indigo #4f46e5 box, lighter #818cf8 border, bold white digits — is described
+ * to the planner in `buildScreenshotNote`; keep the two in sync if this changes.
+ */
+function appendBadge(container: HTMLElement, el: Element, text: string): void {
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  const badge = document.createElement('div');
+  badge.className = '__jev_badge';
+  badge.textContent = text;
+  badge.style.cssText = `
+    position: absolute;
+    top: ${Math.max(0, rect.top - 2)}px;
+    left: ${Math.max(0, rect.left - 2)}px;
+    background: #4f46e5; color: #ffffff; font-size: 11px; font-weight: 700; line-height: 1;
+    padding: 2px 4px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    pointer-events: none; z-index: 2147483641; border: 1px solid #818cf8;
+    transform: translate(0, -50%);
+  `;
+  container.appendChild(badge);
+}
+
 /**
  * Draws [1], [2], ... badges using viewport coordinates. The container is fixed, so
  * badges must not add the scroll offset.
@@ -40,25 +72,27 @@ export function renderElementBadges(actions: PageAction[], visible: boolean): vo
     if (a.node === undefined || seen.has(a.node)) continue;
     seen.add(a.node);
     index++;
-
     const el = cache.nodes.get(a.node);
     if (!el || !el.isConnected) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
+    appendBadge(container, el, String(index));
+  }
+}
 
-    const badge = document.createElement('div');
-    badge.className = '__jev_badge';
-    badge.textContent = String(index);
-    badge.style.cssText = `
-      position: absolute;
-      top: ${Math.max(0, rect.top - 2)}px;
-      left: ${Math.max(0, rect.left - 2)}px;
-      background: #4f46e5; color: #ffffff; font-size: 11px; font-weight: 700; line-height: 1;
-      padding: 2px 4px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-      pointer-events: none; z-index: 2147483641; border: 1px solid #818cf8;
-      transform: translate(0, -50%);
-    `;
-    container.appendChild(badge);
+/**
+ * Planner vision: draws the given numbers on their elements. The numbers are the element
+ * indices the model already sees, so a screenshot carries the same labels as the DOM table.
+ * An empty list clears the badges (used right after the screenshot is taken).
+ */
+export function renderIndexedBadges(entries: BadgeEntry[]): void {
+  const container = initOverlay();
+  clearBadges();
+  if (!entries.length) return;
+
+  const cache = getCache();
+  for (const { index, node } of entries) {
+    const el = cache.nodes.get(node);
+    if (!el || !el.isConnected) continue;
+    appendBadge(container, el, index);
   }
 }
 

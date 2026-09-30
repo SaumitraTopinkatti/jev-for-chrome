@@ -174,6 +174,9 @@ function roleOf(e: Element): string | null {
     if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
     if (type === 'search') return 'searchbox';
     if (type === 'number') return 'spinbutton';
+    // Date/time pickers take typed values like text fields; the executor assigns
+    // them directly (DIRECT_VALUE_TYPES) instead of sending keystrokes.
+    if (['date', 'datetime-local', 'month', 'week', 'time'].includes(type)) return 'textbox';
     if (['text', 'email', 'url', 'tel'].includes(type)) return 'textbox';
   }
   return null;
@@ -212,6 +215,15 @@ const innerText = (e: Element | null | undefined): string => {
   const t = (e as HTMLElement).innerText;
   return typeof t === 'string' ? t : e.textContent || '';
 };
+
+/**
+ * M8: bound the per-decision payload. Labels, field values and option lists are
+ * truncated for the request; exact-match fields (select option values, guard
+ * values) are never truncated, so execution and freshness checks still match.
+ */
+const LABEL_CAP = 200;
+const VALUE_CAP = 200;
+const MAX_SELECT_OPTIONS = 100;
 
 /**
  * What a decision depends on that the target guard does not already cover: the document
@@ -260,6 +272,7 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
   }
 
   const actions: PageAction[] = [];
+  let omittedOptions = 0;
   // Walk headings and controls in document order so each control knows the heading above it.
   let section = '';
   for (const e of Array.from(document.querySelectorAll(`h1,h2,h3,h4,h5,h6,${SELECTOR}`))) {
@@ -294,7 +307,7 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
       id: '',
       node: identity(cache, e),
       role: rname,
-      label: accessibleName(e) || rname,
+      label: (accessibleName(e) || rname).slice(0, LABEL_CAP),
       kind: 'click',
       rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
     };
@@ -315,17 +328,24 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
       const selectEl = e as HTMLSelectElement;
       const current = Array.from(selectEl.selectedOptions)
         .map((op) => op.label)
-        .join(', ');
+        .join(', ')
+        .slice(0, VALUE_CAP);
+      const choices: HTMLOptionElement[] = [];
       for (const o of Array.from(selectEl.options)) {
-        if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]')) {
-          actions.push({
-            ...base,
-            kind: 'select',
-            value: o.value,
-            current_value: current,
-            label: `${base.label} → ${o.label}`,
-          });
-        }
+        if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]')) choices.push(o);
+      }
+      // A select with hundreds of options becomes hundreds of actions; offer the
+      // first MAX_SELECT_OPTIONS (document order) and count the rest as omitted.
+      // o.value stays exact: the executor matches it against the live DOM.
+      omittedOptions += Math.max(0, choices.length - MAX_SELECT_OPTIONS);
+      for (const o of choices.slice(0, MAX_SELECT_OPTIONS)) {
+        actions.push({
+          ...base,
+          kind: 'select',
+          value: o.value,
+          current_value: current,
+          label: `${base.label} → ${o.label.slice(0, 100)}`.slice(0, LABEL_CAP),
+        });
       }
     } else {
       const editable =
@@ -335,13 +355,13 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
           (rname === 'combobox' && ['INPUT', 'TEXTAREA'].includes(e.tagName)));
       const value =
         'value' in e
-          ? String(inputEl.value)
+          ? String(inputEl.value).slice(0, VALUE_CAP)
           : (e as HTMLElement).isContentEditable || rname === 'combobox'
-          ? innerText(e).trim()
+          ? innerText(e).trim().slice(0, VALUE_CAP)
           : '';
       actions.push({ ...base, kind: editable ? 'fill' : 'click', value });
       if (editable) {
-        actions.push({ ...base, kind: 'click', value, label: `Open ${base.label}` });
+        actions.push({ ...base, kind: 'click', value, label: `Open ${base.label}`.slice(0, LABEL_CAP) });
       }
     }
   }
@@ -396,7 +416,7 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
     semantics,
   ];
 
-  const omitted_actions = Math.max(0, actions.length - 250);
+  const omitted_actions = Math.max(0, actions.length - 250) + omittedOptions;
   actions.splice(250);
   actions.forEach((a, i) => {
     a.id = `e${i + 1}`;
@@ -414,7 +434,7 @@ function readState(): { snapshot: PageSnapshot; observed: ObservedState } | null
       id: 'press_enter',
       kind: 'key',
       node: identity(cache, focused),
-      label: `Press Enter in the focused field "${accessibleName(focused) || 'text field'}" to submit it`,
+      label: `Press Enter in the focused field "${(accessibleName(focused) || 'text field').slice(0, 100)}" to submit it`,
     });
   }
   actions.push({ id: 'wait', kind: 'wait', label: 'Wait for the page to update' });

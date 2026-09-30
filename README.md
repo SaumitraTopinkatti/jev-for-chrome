@@ -33,7 +33,6 @@ A Chrome extension that drives the tab you are looking at with [TypeSafe Jev](ht
 Descriptions of the other projects are taken from their READMEs in September 2026.
 
 ## How it works
-## How it works
 
 1. The content script reads the visible page: every interactive element gets a code-owned index, a role, an accessible name and its current value. Visible text is captured up to 6,000 characters. No screenshots.
 2. The background worker sends one request to Jev with the goal, the element table and recent actions. Jev answers two questions at once: which operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_*`, `WAIT`, `DONE`, `BLOCKED`) and, for each operation, which element. Only the target head of the chosen operation is used.
@@ -154,6 +153,8 @@ npm run typecheck
 ```
 
 Tests cover the action space and answer validation, provider adapters and retry policy, the text helper parser, DOM snapshot classification, the content script boot guard, the in-page executor (jsdom) and the agent loop (mocked `chrome`). They never call a paid API. `scripts/test_live_e2e.ts` runs two real requests when `OPENROUTER_API_KEY` is set.
+
+On npm ≥ 11.6 / 12, `npm ci` refuses the `jev-dev-kit` git dependency (`allow-git=none` default, `EALLOWGIT`). Either run `npm ci --allow-git=all --ignore-scripts` and then build the dependency manually (see `docs/audit-2026-09-30.md`), or use npm 10 / Node 22 as CI does.
 
 ### Running the built extension in a real browser
 

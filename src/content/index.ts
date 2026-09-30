@@ -12,7 +12,7 @@ import { clickRect, getCache, takeSnapshot } from './snapshot';
 const failed = (err: any): ActResult => ({ ok: false, code: 'failed', message: err?.message || String(err) });
 
 /**
- * The manifest injects this script at document_idle and the background may inject it
+ * The manifest injects this script at document_end and the background may inject it
  * earlier on demand. Both land in the same isolated world, so a window marker guarantees a
  * single live listener: two listeners would execute every action twice. A marker left by a
  * previous extension instance (after "Reload" on chrome://extensions) is ignored because

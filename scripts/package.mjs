@@ -9,10 +9,13 @@
 // Entries sit at the zip root, so unzipping gives one folder that directly contains
 // manifest.json: the folder to pick in "Load unpacked".
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { zipSync, unzipSync } from 'fflate';
 
-const root = new URL('..', import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: on Windows pathname yields /C:/… which
+// path.join turns into \C:\… and existsSync fails (M5).
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const fail = (msg) => { console.error(`package: ${msg}`); process.exit(1); };
 

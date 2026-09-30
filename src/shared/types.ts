@@ -326,6 +326,21 @@ export interface JevDelegateResult {
   excerpt: string;
 }
 
+/**
+ * Content → background: what a screenshot point lands on. `node` is the executor's cache
+ * id when the element is known; the background maps it to the planner element index.
+ */
+export interface ProbeCandidate {
+  node?: number;
+  tag: string;
+  role?: string;
+  label: string;
+  /** CSS px from the requested point to the nearest edge of the element's click rect. */
+  distance: number;
+  /** True when a click at the point would land on something else (a modal, a sticky bar). */
+  covered?: boolean;
+}
+
 export interface AgentProgress {
   status: AgentStatus;
   goal: string;
@@ -355,6 +370,8 @@ export type ExtensionMessage =
    * table. An empty list clears the badges.
    */
   | { type: 'CONTENT_LABEL'; entries: Array<{ index: string; node: number }> }
+  /** Planner vision: resolve a screenshot point to the elements at and near it (x/y are CSS px). */
+  | { type: 'CONTENT_PROBE'; x: number; y: number }
   /** Whole action inside the page with synthetic events (fallback when trusted input is off). */
   | { type: 'CONTENT_ACT'; action: PageAction; text?: string }
   /** Checks, scrolls and focuses the target; returns the point for the background's trusted input. */

@@ -575,7 +575,7 @@ describe('trusted input (chrome.debugger)', () => {
   function installDebugger(page: Page, opts: { prepare?: (msg: any) => any; sendCommand?: (method: string, params: any) => any } = {}) {
     const chromeMock = installChrome(page);
     const commands: Array<{ method: string; params: any }> = [];
-    chromeMock.tabs.sendMessage.mockImplementation(async (_tabId: number, msg: any) => {
+    chromeMock.tabs.sendMessage.mockImplementation(async (_tabId: number, msg: any): Promise<any> => {
       page.sent.push(msg);
       switch (msg.type) {
         case 'PING': return { pong: true };
@@ -760,6 +760,84 @@ describe('planner vision (labeled screenshots)', () => {
     expect(chromeMock.tabs.captureVisibleTab).toHaveBeenCalledTimes(2);
   });
 
+  it('locate_at resolves a screenshot point to the element under it and the nearest indices', async () => {
+    planner
+      .mockResolvedValueOnce(planTool('locate_at', { x: 10, y: 20 }))
+      .mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
+    chromeMock.tabs.sendMessage.mockImplementation(async (_tabId: number, msg: any): Promise<any> => {
+      page.sent.push(msg);
+      switch (msg.type) {
+        case 'PING':
+          return { pong: true };
+        case 'CONTENT_OBSERVE':
+          return { success: true, snapshot: page.snapshot };
+        case 'CONTENT_PROBE':
+          return {
+            success: true,
+            candidates: [
+              { tag: 'div', label: 'Overlay', distance: 0 },
+              { node: 1, tag: 'button', role: 'button', label: 'Search', distance: 12 },
+            ],
+          };
+        default:
+          return { ok: true };
+      }
+    });
+
+    const r = plannerRunner();
+    await r.stepPlanner('Find it', 7);
+    await r.stepPlanner('Find it', 7);
+
+    // The message array is the live planner history, so select the exact tool result by content.
+    const toolMsg = planner.mock.calls[1][1].find(
+      (m) => m.role === 'tool' && String(m.content).includes('"point"')
+    ) as { content: string };
+    const payload = JSON.parse(toolMsg.content);
+    expect(payload.ok).toBe(true);
+    expect(payload.at).toMatchObject({ tag: 'div', label: 'Overlay', offered: false });
+    expect(payload.near[0]).toMatchObject({ index: '1', tag: 'button', label: 'Search', offered: true });
+  });
+
+  it('a screen_act that changes nothing returns a probe of the same point', async () => {
+    planner
+      .mockResolvedValueOnce(planTool('screen_act', { x: 10, y: 20, action: 'click' }))
+      .mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
+    chromeMock.tabs.sendMessage.mockImplementation(async (_tabId: number, msg: any): Promise<any> => {
+      page.sent.push(msg);
+      switch (msg.type) {
+        case 'PING':
+          return { pong: true };
+        case 'CONTENT_OBSERVE':
+          return { success: true, snapshot: page.snapshot };
+        case 'CONTENT_PROBE':
+          return { success: true, candidates: [{ node: 1, tag: 'button', role: 'button', label: 'Search', distance: 4 }] };
+        default:
+          return { ok: true };
+      }
+    });
+    vi.stubGlobal('chrome', {
+      ...chromeMock,
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+        sendCommand: vi.fn(async () => ({})),
+        onDetach: { addListener: vi.fn() },
+      },
+    });
+
+    const r = plannerRunner({ trustedInput: true });
+    await r.stepPlanner('Press it', 7);
+    await r.stepPlanner('Press it', 7);
+
+    expect(page.sent.some((m) => m.type === 'CONTENT_PROBE')).toBe(true);
+    const toolMsg = planner.mock.calls[1][1].find(
+      (m) => m.role === 'tool' && String(m.content).includes('"probe"')
+    ) as { content: string };
+    const payload = JSON.parse(toolMsg.content);
+    expect(payload.outcome).toMatch(/no visible change/);
+    expect(payload.probe.at).toMatchObject({ index: '1', label: 'Search', offered: true });
+  });
+
   it('keeps the DOM-only path when screenshots are disabled', async () => {
     planner.mockResolvedValueOnce(planTool('task_finish', { status: 'done', summary: 'ok' }));
 
@@ -770,3 +848,4 @@ describe('planner vision (labeled screenshots)', () => {
     expect(planner.mock.calls[0][1].some((m) => Array.isArray(m.content))).toBe(false);
   });
 });
+

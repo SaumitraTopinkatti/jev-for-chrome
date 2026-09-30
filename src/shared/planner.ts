@@ -114,9 +114,27 @@ const SCREEN_ACT_TOOL = {
   },
 };
 
+/** Turns a screenshot point into real DOM indices; ships with the vision pair. */
+const LOCATE_AT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'locate_at',
+    description:
+      'Resolve a screenshot point (x,y 0-1000) to the real page: what that point lands on, plus the indexed elements nearest to it. Use it when a screen_act click did nothing, to see what actually sits under a coordinate (an overlay, an unlabeled or canvas control), and to recover the element index browser_act should use instead. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', minimum: 0, maximum: 1000, description: 'Horizontal position in the screenshot, 0-1000' },
+        y: { type: 'number', minimum: 0, maximum: 1000, description: 'Vertical position in the screenshot, 0-1000' },
+      },
+      required: ['x', 'y'],
+    },
+  },
+};
+
 /** Tool set for the call: the vision pair only when the setting is on (vision models). */
 export function buildPlannerTools(settings: AppSettings): typeof PLANNER_TOOLS {
-  return (settings.screenshotsEnabled ? [...PLANNER_TOOLS, TAKE_SCREENSHOT_TOOL, SCREEN_ACT_TOOL] : PLANNER_TOOLS) as typeof PLANNER_TOOLS;
+  return (settings.screenshotsEnabled ? [...PLANNER_TOOLS, TAKE_SCREENSHOT_TOOL, SCREEN_ACT_TOOL, LOCATE_AT_TOOL] : PLANNER_TOOLS) as typeof PLANNER_TOOLS;
 }
 
 const VISION_SYSTEM_LINE = [
@@ -127,6 +145,9 @@ const VISION_SYSTEM_LINE = [
   'box, no index) is invisible to jev_delegate AND to browser_act ids: never delegate those,',
   'act on them yourself with screen_act at 0-1000 coordinates. Prefer indices whenever they',
   'exist, since coordinates can miss; the per-step diff tells you whether the click landed.',
+  'When a screen_act coordinate produces no change, call locate_at with the same x/y: it',
+  'reports the element that point actually lands on and the indexed elements nearest to it,',
+  'so you can switch to a real index with browser_act instead of retrying the coordinate.',
   'take_screenshot is still available for an extra look at a page state that changed after',
   'the observation.',
 ].join(' ');
@@ -158,7 +179,7 @@ export interface PlannerObservation {
 }
 
 export interface PlannerToolCall {
-  name: 'browser_act' | 'jev_delegate' | 'task_finish' | 'take_screenshot' | 'screen_act';
+  name: 'browser_act' | 'jev_delegate' | 'task_finish' | 'take_screenshot' | 'screen_act' | 'locate_at';
   args: Record<string, any>;
 }
 

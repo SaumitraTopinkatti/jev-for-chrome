@@ -8,7 +8,7 @@ import {
   renderIndexedBadges,
   showStatusBanner,
 } from './overlay';
-import { clickRect, getCache, takeSnapshot } from './snapshot';
+import { clickRect, getCache, probePoint, takeSnapshot } from './snapshot';
 
 const failed = (err: any): ActResult => ({ ok: false, code: 'failed', message: err?.message || String(err) });
 
@@ -85,6 +85,15 @@ function boot(): void {
             return true; // async sendResponse
           }
           sendResponse({ success: true });
+          return false;
+        }
+
+        case 'CONTENT_PROBE': {
+          try {
+            sendResponse({ success: true, candidates: probePoint(message.x, message.y) });
+          } catch (err: any) {
+            sendResponse({ success: false, error: err?.message || String(err) });
+          }
           return false;
         }
 

@@ -27,6 +27,7 @@ import {
   PageAction,
   PageSnapshot,
   PrepareResult,
+  ProbeCandidate,
   RecentAction,
 } from '../shared/types';
 import { TrustedInput } from './input';
@@ -1328,6 +1329,53 @@ export class AgentRunner {
     return snapshot.actions.find((a) => a.id === tid);
   }
 
+  /** Cache node id → planner element index, from an action space's target groups. */
+  private nodeIndexLookup(targets: Record<string, Record<string, PageAction>>): Map<number, string> {
+    const byNode = new Map<number, string>();
+    for (const group of Object.values(targets)) {
+      for (const [key, action] of Object.entries(group)) {
+        const base = key.split(':')[0];
+        if (action.node !== undefined && !byNode.has(action.node)) byNode.set(action.node, base);
+      }
+    }
+    return byNode;
+  }
+
+  /**
+   * Maps a screenshot point (0-1000) to the page: asks the content script what is at and near
+   * it, then decorates each hit with the planner element index when one exists. Read-only, so
+   * it runs even without trusted input. Returns null when the page cannot be probed.
+   */
+  private async probeAt(
+    tabId: number,
+    snapshot: PageSnapshot,
+    targets: Record<string, Record<string, PageAction>>,
+    x: number,
+    y: number
+  ): Promise<Record<string, unknown> | null> {
+    const point = screenRelativeToCss(x, y, snapshot.w, snapshot.h);
+    const res = await chrome.tabs
+      .sendMessage(tabId, { type: 'CONTENT_PROBE', x: point.x, y: point.y })
+      .catch(() => null);
+    if (!res?.success || !Array.isArray(res.candidates)) return null;
+    const byNode = this.nodeIndexLookup(targets);
+    const candidates = (res.candidates as ProbeCandidate[]).map((c) => {
+      const index = c.node !== undefined ? byNode.get(c.node) : undefined;
+      return {
+        ...(index ? { index } : {}),
+        label: c.label,
+        tag: c.tag,
+        ...(c.role ? { role: c.role } : {}),
+        distance: c.distance,
+        ...(c.covered ? { covered: c.covered } : {}),
+        offered: !!index,
+      };
+    });
+    return candidates.length
+      ? { point, at: candidates[0], near: candidates.slice(1) }
+      : { point, at: null, near: [] };
+  }
+
   /**
    * One planner turn: observe, ask the planner model for one tool call, run it.
    * Returns false when the run has ended.
@@ -1424,7 +1472,7 @@ export class AgentRunner {
       }
       this.plannerNudges++;
       const toolList = this.settings.screenshotsEnabled
-        ? 'browser_act, jev_delegate, task_finish, take_screenshot, screen_act'
+        ? 'browser_act, jev_delegate, task_finish, take_screenshot, screen_act, locate_at'
         : 'browser_act, jev_delegate, task_finish';
       const cut =
         finishReason === 'length'
@@ -1566,7 +1614,27 @@ export class AgentRunner {
       if (token !== this.runToken) return false;
       await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_SETTLE' }).catch(() => undefined);
       return this.finishDirectAct(token, tabId, snapshot, latencyMs,
-        { op: 'SCREEN_ACT', label: `${sact} @(${Math.round(rx)},${Math.round(ry)})`, text: stext }, pushToolResult);
+        { op: 'SCREEN_ACT', label: `${sact} @(${Math.round(rx)},${Math.round(ry)})`, text: stext }, pushToolResult,
+        { x: rx, y: ry, targets: space.targets });
+    }
+
+    if (toolCall.name === 'locate_at') {
+      // Read-only: turn a guessed coordinate into the real element (and its index) so the
+      // planner can recover from a screen_act that missed without another blind retry.
+      if (!this.settings.screenshotsEnabled) {
+        pushToolResult({ ok: false, error: 'Screenshots are disabled in settings.' });
+        return true;
+      }
+      const lx = Number(toolCall.args.x);
+      const ly = Number(toolCall.args.y);
+      if (!Number.isFinite(lx) || !Number.isFinite(ly) || lx < 0 || lx > 1000 || ly < 0 || ly > 1000) {
+        pushToolResult({ ok: false, error: 'locate_at needs x/y in 0-1000.' });
+        return true;
+      }
+      const probe = await this.probeAt(tabId, snapshot, space.targets, lx, ly);
+      if (token !== this.runToken) return false;
+      pushToolResult(probe ? { ok: true, ...probe } : { ok: false, error: 'Could not probe that point.' });
+      return true;
     }
 
     // browser_act: the planner's own hands, the only path that types.
@@ -1626,7 +1694,8 @@ export class AgentRunner {
     before: PageSnapshot,
     latencyMs: number,
     entry: { op: string; kind?: string; label: string; targetId?: string; text?: string },
-    pushToolResult: (payload: unknown) => void
+    pushToolResult: (payload: unknown) => void,
+    probe?: { x: number; y: number; targets: Record<string, Record<string, PageAction>> }
   ): Promise<boolean> {
     if (this.pendingTab) {
       await this.followTab();
@@ -1653,7 +1722,16 @@ export class AgentRunner {
       targetId: entry.targetId, targetLabel: entry.label, targetValue: entry.text,
       latencyMs, provider: 'planner', diff: line,
     });
-    pushToolResult({ ok: true, outcome: line, url: after.url, title: after.title });
+    // A screen_act that changed nothing gets an automatic probe of the same point: the model
+    // sees what the coordinate actually hit (and the nearest indices) in the same tool result,
+    // instead of guessing again and tripping the no-change deadlock guard.
+    const payload: Record<string, unknown> = { ok: true, outcome: line, url: after.url, title: after.title };
+    if (!pageChanged && probe) {
+      const probed = await this.probeAt(tabId, before, probe.targets, probe.x, probe.y);
+      if (token !== this.runToken) return false;
+      if (probed) payload.probe = probed;
+    }
+    pushToolResult(payload);
     this.broadcastUpdate();
     if (this.progress.currentStep >= this.progress.maxSteps) {
       this.finish('blocked', `Reached the ${this.progress.maxSteps}-step budget.`);

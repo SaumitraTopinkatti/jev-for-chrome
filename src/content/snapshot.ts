@@ -1,4 +1,4 @@
-import { PageAction, PageSnapshot } from '../shared/types';
+import { PageAction, PageSnapshot, ProbeCandidate } from '../shared/types';
 
 /** Semantic state captured with the last snapshot, used to detect stale decisions. */
 interface ObservedState {
@@ -78,6 +78,86 @@ export function isCovered(e: Element, r: DOMRect): boolean {
   const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
   if (!hit || hit === e || e.contains(hit) || hit.contains(e)) return false;
   return !sameComponent(e, hit);
+}
+
+const NEARBY_RADIUS = 160;
+const MAX_PROBE_CANDIDATES = 10;
+
+/** Topmost element at a viewport point, piercing open shadow roots. */
+function elementAtPoint(x: number, y: number): Element | null {
+  let root: Document | ShadowRoot = document;
+  let el: Element | null = null;
+  for (let depth = 0; depth < 8; depth++) {
+    if (typeof (root as Document).elementFromPoint !== 'function') return el;
+    el = root.elementFromPoint(x, y);
+    if (!el) return null;
+    const shadow: ShadowRoot | null = (el as HTMLElement).shadowRoot;
+    if (shadow && typeof shadow.elementFromPoint === 'function') {
+      root = shadow;
+      continue;
+    }
+    return el;
+  }
+  return el;
+}
+
+/** Shortest distance from a viewport point to a rect (0 when the point is inside it). */
+function rectDistance(r: DOMRect, x: number, y: number): number {
+  const nx = Math.min(Math.max(x, r.left), r.right);
+  const ny = Math.min(Math.max(y, r.top), r.bottom);
+  return Math.hypot(x - nx, y - ny);
+}
+
+/**
+ * What a click at (x, y) would land on, plus the known elements nearest that point. Turns a
+ * guessed screenshot coordinate into the real DOM element — and, when that element is offered,
+ * back into an index `browser_act` can use. Empty when the point hits nothing and no cached
+ * element is within NEARBY_RADIUS.
+ */
+export function probePoint(x: number, y: number): ProbeCandidate[] {
+  const cache = getCache();
+  const found = new Map<Element, { distance: number; area: number }>();
+  const add = (el: Element, distance: number) => {
+    if (!el.isConnected) return;
+    const r = clickRect(el);
+    const area = Math.max(0, r.width) * Math.max(0, r.height);
+    const prev = found.get(el);
+    if (!prev || distance < prev.distance) found.set(el, { distance, area });
+  };
+
+  // The element under the point, then a few ancestors: an unlabeled overlay button still names
+  // the container it lives in, so the planner learns where the point actually is.
+  let climb = elementAtPoint(x, y);
+  if (climb) add(climb, 0);
+  for (let up = 0; climb && up < 6; up++) {
+    climb = climb.parentElement;
+    if (climb) add(climb, rectDistance(clickRect(climb), x, y));
+  }
+
+  for (const [, el] of cache.nodes) {
+    if (!el.isConnected) continue;
+    const d = rectDistance(clickRect(el), x, y);
+    if (d <= NEARBY_RADIUS) add(el, d);
+  }
+
+  return [...found.entries()]
+    .map(([el, { distance, area }]) => {
+      const r = clickRect(el);
+      const role = roleOf(el);
+      const candidate: ProbeCandidate & { area: number } = {
+        tag: el.tagName.toLowerCase(),
+        label: (accessibleName(el) || role || '').slice(0, 120),
+        distance: Math.round(distance),
+        area,
+        ...(cache.ids.has(el) ? { node: cache.ids.get(el)! } : {}),
+        ...(isCovered(el, r) ? { covered: true } : {}),
+      };
+      if (role) candidate.role = role;
+      return candidate;
+    })
+    .sort((a, b) => a.distance - b.distance || a.area - b.area)
+    .slice(0, MAX_PROBE_CANDIDATES)
+    .map(({ area, ...c }) => c);
 }
 
 export function getCache(): JevCache {

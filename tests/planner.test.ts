@@ -25,9 +25,11 @@ describe('planner contract', () => {
     const off = buildPlannerTools({ ...DEFAULT_SETTINGS, screenshotsEnabled: false }).map((t) => t.function.name);
     expect(off).not.toContain('take_screenshot');
     expect(off).not.toContain('screen_act');
+    expect(off).not.toContain('locate_at');
     const on = buildPlannerTools({ ...DEFAULT_SETTINGS, screenshotsEnabled: true }).map((t) => t.function.name);
     expect(on).toContain('take_screenshot');
     expect(on).toContain('screen_act');
+    expect(on).toContain('locate_at');
   });
 
   it('maps 0-1000 screenshot units onto CSS viewport pixels', () => {

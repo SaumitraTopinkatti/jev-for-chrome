@@ -80,6 +80,36 @@ describe('planner contract', () => {
     }
   });
 
+  it('accepts a native screen_act call only when the vision tools are offered', async () => {
+    const screenCall = {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'screen_act', arguments: '{"x":10,"y":20,"action":"click"}' } },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: screenCall }] }) }))
+    );
+    try {
+      const vision = {
+        ...DEFAULT_SETTINGS,
+        screenshotsEnabled: true,
+        textHelper: { ...DEFAULT_SETTINGS.textHelper, apiKey: 'test-key' },
+      };
+      const res = await callPlanner(vision, [{ role: 'user', content: 'hi' }]);
+      expect(res.toolCall).toEqual({ name: 'screen_act', args: { x: 10, y: 20, action: 'click' } });
+
+      // The same call is refused when screen_act was not among the offered tools.
+      await expect(
+        callPlanner({ ...vision, screenshotsEnabled: false }, [{ role: 'user', content: 'hi' }])
+      ).rejects.toThrow(/unknown tool "screen_act"/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('returns a null tool call (not a throw) when the model just chats', async () => {
     vi.stubGlobal(
       'fetch',

@@ -296,13 +296,17 @@ export async function callPlanner(
   options: { signal?: AbortSignal } = {}
 ): Promise<{ message: ChatMessage; toolCall: PlannerToolCall | null; content: string; finishReason: string | null }> {
   const { baseUrl, model, apiKey } = plannerKey(settings);
+  const tools = buildPlannerTools(settings);
+  // Validate tool calls against the set actually offered this turn, not a hand-kept
+  // list: screen_act ships with the vision tools, and a stale literal here rejected it.
+  const offered = new Set(tools.map((t) => t.function.name));
   const json = await postJson(
     `${baseUrl}/chat/completions`,
     {
       Authorization: `Bearer ${apiKey}`,
       ...(baseUrl.includes('openrouter.ai') ? OPENROUTER_HEADERS : {}),
     },
-    { model, temperature: 0, max_tokens: 2048, tools: buildPlannerTools(settings), tool_choice: 'auto', messages },
+    { model, temperature: 0, max_tokens: 2048, tools, tool_choice: 'auto', messages },
     { label: 'Planner', signal: options.signal }
   );
   const choice = json?.choices?.[0];
@@ -329,8 +333,8 @@ export async function callPlanner(
     } catch {
       throw new Error('Planner returned malformed tool arguments; nothing executed.');
     }
-    const name = rawCall.function.name;
-    if (name !== 'browser_act' && name !== 'jev_delegate' && name !== 'task_finish' && name !== 'take_screenshot') {
+    const name = rawCall.function.name as PlannerToolCall['name'];
+    if (!offered.has(name)) {
       throw new Error(`Planner called unknown tool "${name}"; nothing executed.`);
     }
     return { message: normalized, toolCall: { name, args }, content: text, finishReason };
@@ -342,7 +346,7 @@ export async function callPlanner(
     try {
       const parsed = JSON.parse(content);
       const name = parsed.name || parsed.tool;
-      if (name === 'browser_act' || name === 'jev_delegate' || name === 'task_finish' || name === 'take_screenshot' || name === 'screen_act') {
+      if (offered.has(name)) {
         return { message: normalized, toolCall: { name, args: parsed.arguments || parsed.args || {} }, content, finishReason };
       }
     } catch {
